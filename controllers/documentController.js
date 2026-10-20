@@ -1,0 +1,224 @@
+import Document from "../models/Document.js";
+import Patient from "../models/Patient.js";
+import fs from "fs";
+import path from "path";
+import { logAudit } from "../utils/auditLogger.js";
+
+// @desc    Upload document / medical file under specific category
+// @route   POST /api/patients/:id/documents
+// @access  Private (Admin, Doctor, Staff)
+export const uploadDocument = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { category, visitId } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded or invalid file type",
+        errors: { file: "File is required and must be JPEG, PNG, WEBP, or PDF under 10MB." },
+      });
+    }
+
+    let patient;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      patient = await Patient.findById(id);
+    } else {
+      patient = await Patient.findOne({ crNo: id });
+    }
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient record not found",
+      });
+    }
+
+    const docCategory = ["Patient Image", "Investigation", "Histopathology", "Other"].includes(category)
+      ? category
+      : "Other";
+
+    const documentData = {
+      patientId: patient._id,
+      visitId: visitId && visitId.match(/^[0-9a-fA-F]{24}$/) ? visitId : undefined,
+      originalName: req.file.originalname,
+      storedName: req.file.filename,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      path: `/uploads/${req.file.filename}`,
+      category: docCategory,
+      uploadedBy: req.user._id,
+      uploadedAt: new Date(),
+    };
+
+    const doc = await Document.create(documentData);
+
+    // Also sync to patient's embedded files array for backwards compatibility
+    patient.files.push({
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      path: `/uploads/${req.file.filename}`,
+      uploadedAt: new Date(),
+    });
+    await patient.save();
+
+    await logAudit({
+      userId: req.user._id,
+      action: "DOCUMENT_UPLOADED",
+      resource: "Document",
+      resourceId: doc._id.toString(),
+      metadata: { crNo: patient.crNo, category: docCategory, filename: req.file.filename },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Document uploaded successfully",
+      data: doc,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all documents for a patient (optional filter by category or visitId)
+// @route   GET /api/patients/:id/documents
+// @access  Private
+export const getPatientDocuments = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { category, visitId } = req.query;
+
+    let patient;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      patient = await Patient.findById(id);
+    } else {
+      patient = await Patient.findOne({ crNo: id });
+    }
+
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient record not found",
+      });
+    }
+
+    const query = { patientId: patient._id };
+    if (category && category !== "All") {
+      query.category = category;
+    }
+    if (visitId) {
+      query.visitId = visitId;
+    }
+
+    const documents = await Document.find(query)
+      .populate("uploadedBy", "name role")
+      .sort({ uploadedAt: -1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: documents,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Secure document streaming (Authenticated access only)
+// @route   GET /api/files/:fileId
+// @access  Private
+export const streamDocument = async (req, res, next) => {
+  try {
+    const { fileId } = req.params;
+
+    let doc;
+    if (fileId.match(/^[0-9a-fA-F]{24}$/)) {
+      doc = await Document.findById(fileId);
+    } else {
+      doc = await Document.findOne({ storedName: fileId });
+    }
+
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: "File record not found",
+      });
+    }
+
+    // Path traversal check
+    const safeFilename = path.basename(doc.storedName);
+    const filePath = path.join(process.cwd(), "uploads", safeFilename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: "File not found on server disk",
+      });
+    }
+
+    res.setHeader("Content-Type", doc.mimeType);
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalName)}"`);
+
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete document record & physical file safely
+// @route   DELETE /api/patients/:id/documents/:fileId
+// @access  Private (Admin, Doctor)
+export const deleteDocument = async (req, res, next) => {
+  try {
+    const { id, fileId } = req.params;
+
+    let doc;
+    if (fileId.match(/^[0-9a-fA-F]{24}$/)) {
+      doc = await Document.findById(fileId);
+    } else {
+      doc = await Document.findOne({ storedName: fileId });
+    }
+
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: "Document record not found",
+      });
+    }
+
+    // Remove physical file safely
+    const safeFilename = path.basename(doc.storedName);
+    const filePath = path.join(process.cwd(), "uploads", safeFilename);
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    // Delete Document record
+    await Document.findByIdAndDelete(doc._id);
+
+    // Also clean embedded array on Patient if exists
+    await Patient.findByIdAndUpdate(doc.patientId, {
+      $pull: { files: { filename: safeFilename } },
+    });
+
+    await logAudit({
+      userId: req.user._id,
+      action: "DOCUMENT_DELETED",
+      resource: "Document",
+      resourceId: doc._id.toString(),
+      metadata: { filename: safeFilename },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Document removed successfully",
+      data: { id: doc._id, filename: safeFilename },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
