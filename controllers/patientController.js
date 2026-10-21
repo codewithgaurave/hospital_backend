@@ -1,7 +1,6 @@
 import Patient from "../models/Patient.js";
 import Visit from "../models/Visit.js";
 import Document from "../models/Document.js";
-import { generateUniqueCRNumber } from "../utils/crGenerator.js";
 import { logAudit } from "../utils/auditLogger.js";
 
 // @desc    Register new patient & generate backend authoritative CR Number
@@ -528,18 +527,14 @@ export const getPatientFilterOptions = async (req, res, next) => {
       )
     ).sort((a, b) => a.localeCompare(b));
 
-    // 3. Exact distinct wards from patient records only
-    const rawWards = await Patient.distinct("wardDetails.ward", {
-      isArchived: false,
-      "wardDetails.ward": { $exists: true, $nin: [null, ""] },
-    });
-    const wards = Array.from(
-      new Set(
-        rawWards
-          .map((w) => (typeof w === "string" ? w.trim() : ""))
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
+    // 3. STRICTLY ONLY the 5 official Neurosurgery wards (no others allowed)
+    const wards = [
+      "Neurosurgery General ward 1",
+      "Neurosurgery General ward 2",
+      "Neurosurgery HDU",
+      "Neurosurgery ICU",
+      "Neurosurgery Pediatrics ward",
+    ];
 
     return res.status(200).json({
       success: true,
