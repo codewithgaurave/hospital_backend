@@ -9,14 +9,52 @@ import { logAudit } from "../utils/auditLogger.js";
 // @access  Private (Admin, Doctor, Staff)
 export const createPatient = async (req, res, next) => {
   try {
-    // Generate unique sequential server CR number
-    const crNo = await generateUniqueCRNumber();
+    // Manual CR Number entry (auto-generate feature removed per client requirement)
+    const rawCrNo = req.body.crNo || "";
+    const crNo = typeof rawCrNo === "string" ? rawCrNo.trim() : String(rawCrNo).trim();
+
+    if (!crNo) {
+      return res.status(400).json({
+        success: false,
+        message: "CR Number is required. Please enter a manual CR Number.",
+        errors: { crNo: "CR Number is required" },
+      });
+    }
+
+    // Check if CR Number already exists
+    const existingPatient = await Patient.findOne({ crNo });
+    if (existingPatient) {
+      return res.status(400).json({
+        success: false,
+        message: `CR Number "${crNo}" already exists in the system. Please enter a unique CR Number.`,
+        errors: { crNo: "CR Number already in use" },
+      });
+    }
+
+    // Manual IP Number entry
+    const ipNo = (
+      req.body.ipNo ||
+      req.body.ipNumber ||
+      req.body.hospitalDetails?.ipNumber ||
+      req.body.hospitalDetails?.hospitalNumber ||
+      ""
+    ).toString().trim();
 
     const status = req.body.status || req.body.statusOnDischarge || "Admitted";
 
+    const hospitalDetails = {
+      ...(req.body.hospitalDetails || {}),
+      hospitalNumber: req.body.hospitalDetails?.hospitalNumber || ipNo || undefined,
+      ipNumber: ipNo || req.body.hospitalDetails?.hospitalNumber || undefined,
+      patientNumber: req.body.hospitalDetails?.patientNumber || undefined,
+    };
+
     const patientData = {
       ...req.body,
-      crNo, // Authoritative server-generated CR Number
+      crNo, // Manual user-entered CR Number
+      ipNo: ipNo || undefined, // Manual user-entered IP Number
+      hospitalDetails,
+      dischargeRemarks: req.body.dischargeRemarks || req.body.doctorComments || "",
       status,
       statusOnDischarge: status,
       isArchived: false,
@@ -45,6 +83,8 @@ export const createPatient = async (req, res, next) => {
         courseInHospital: patient.courseInHospital,
         status: status,
         doctorComments: patient.doctorComments,
+        dischargeRemarks: patient.dischargeRemarks,
+        ipNo: patient.ipNo,
         medications: patient.medications || [],
         followUpDate: patient.followUp?.date,
         followUpInstructions: patient.followUp?.instructions,
@@ -62,7 +102,7 @@ export const createPatient = async (req, res, next) => {
       action: "PATIENT_CREATED",
       resource: "Patient",
       resourceId: patient._id.toString(),
-      metadata: { crNo: patient.crNo, name: patient.personalDetails?.name },
+      metadata: { crNo: patient.crNo, ipNo: patient.ipNo, name: patient.personalDetails?.name },
     });
 
     return res.status(201).json({
@@ -97,9 +137,11 @@ export const getPatients = async (req, res, next) => {
       const searchRegex = new RegExp(search.trim(), "i");
       query.$or = [
         { crNo: searchRegex },
+        { ipNo: searchRegex },
         { "personalDetails.name": searchRegex },
         { "contactDetails.mobile": searchRegex },
         { "hospitalDetails.hospitalNumber": searchRegex },
+        { "hospitalDetails.ipNumber": searchRegex },
       ];
     }
 
@@ -180,7 +222,7 @@ export const getPatients = async (req, res, next) => {
 // @access  Private
 export const searchPatients = async (req, res, next) => {
   try {
-    const { q, crNo, mobile, hospitalNumber, doctor, fromDate, toDate } = req.query;
+    const { q, crNo, ipNo, mobile, hospitalNumber, doctor, fromDate, toDate } = req.query;
 
     const query = { isArchived: false };
 
@@ -188,15 +230,25 @@ export const searchPatients = async (req, res, next) => {
       const qRegex = new RegExp(q.trim(), "i");
       query.$or = [
         { crNo: qRegex },
+        { ipNo: qRegex },
         { "personalDetails.name": qRegex },
         { "contactDetails.mobile": qRegex },
         { "hospitalDetails.hospitalNumber": qRegex },
+        { "hospitalDetails.ipNumber": qRegex },
         { "doctorDetails.doctorName": qRegex },
       ];
     }
 
     if (crNo) {
       query.crNo = new RegExp(crNo.trim(), "i");
+    }
+
+    if (ipNo) {
+      query.$or = [
+        { ipNo: new RegExp(ipNo.trim(), "i") },
+        { "hospitalDetails.ipNumber": new RegExp(ipNo.trim(), "i") },
+        { "hospitalDetails.hospitalNumber": new RegExp(ipNo.trim(), "i") },
+      ];
     }
 
     if (mobile) {
@@ -284,13 +336,42 @@ export const updatePatient = async (req, res, next) => {
 
     // Whitelist updateable fields & explicitly strip immutable metadata
     const updateData = { ...req.body };
-    delete updateData.crNo;
     delete updateData.createdBy;
     delete updateData.createdAt;
     delete updateData.isArchived;
     delete updateData.archivedAt;
     delete updateData.archivedBy;
     updateData.updatedBy = req.user._id;
+
+    // Handle manual CR Number update
+    if (updateData.crNo) {
+      const trimmedCrNo = String(updateData.crNo).trim();
+      if (trimmedCrNo !== patient.crNo) {
+        const existingWithCr = await Patient.findOne({ crNo: trimmedCrNo, _id: { $ne: patient._id } });
+        if (existingWithCr) {
+          return res.status(400).json({
+            success: false,
+            message: `CR Number "${trimmedCrNo}" is already in use by another patient.`,
+            errors: { crNo: "CR Number already in use" },
+          });
+        }
+        updateData.crNo = trimmedCrNo;
+      }
+    } else {
+      delete updateData.crNo;
+    }
+
+    // Handle manual IP Number update
+    if (updateData.ipNo || updateData.ipNumber || updateData.hospitalDetails?.ipNumber) {
+      const ipVal = String(updateData.ipNo || updateData.ipNumber || updateData.hospitalDetails?.ipNumber).trim();
+      updateData.ipNo = ipVal;
+      updateData.hospitalDetails = {
+        ...(patient.hospitalDetails?.toObject?.() || patient.hospitalDetails || {}),
+        ...(updateData.hospitalDetails || {}),
+        ipNumber: ipVal,
+        hospitalNumber: updateData.hospitalDetails?.hospitalNumber || ipVal,
+      };
+    }
 
     if (updateData.status && !updateData.statusOnDischarge) {
       updateData.statusOnDischarge = updateData.status;

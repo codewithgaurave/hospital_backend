@@ -116,6 +116,14 @@ const visitSchema = new mongoose.Schema(
     doctorComments: {
       type: String,
     },
+    dischargeRemarks: {
+      type: String,
+      trim: true,
+    },
+    ipNo: {
+      type: String,
+      trim: true,
+    },
     advice: {
       type: String,
     },

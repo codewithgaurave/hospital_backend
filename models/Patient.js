@@ -32,6 +32,11 @@ const patientSchema = new mongoose.Schema(
       index: true,
       trim: true,
     },
+    ipNo: {
+      type: String,
+      index: true,
+      trim: true,
+    },
     personalDetails: {
       name: { type: String, required: [true, "Patient name is required"], trim: true },
       fatherGuardianName: { type: String, trim: true },
@@ -56,6 +61,7 @@ const patientSchema = new mongoose.Schema(
     hospitalDetails: {
       hospitalNumber: { type: String, index: true },
       patientNumber: { type: String },
+      ipNumber: { type: String, index: true },
     },
     wardDetails: {
       ward: { type: String, default: "General Ward" },
@@ -85,6 +91,7 @@ const patientSchema = new mongoose.Schema(
     courseInHospital: { type: String },
     statusOnDischarge: { type: String, default: "Admitted", index: true },
     doctorComments: { type: String },
+    dischargeRemarks: { type: String, trim: true },
     medications: [medicationSchema],
     followUp: {
       date: { type: String },
@@ -119,7 +126,7 @@ const patientSchema = new mongoose.Schema(
   }
 );
 
-// Ensure status and statusOnDischarge remain synchronized
+// Ensure status and statusOnDischarge, and ipNo remain synchronized
 patientSchema.pre("save", function (next) {
   if (this.isModified("status") && !this.isModified("statusOnDischarge")) {
     this.statusOnDischarge = this.status;
@@ -130,11 +137,19 @@ patientSchema.pre("save", function (next) {
   } else if (this.status && !this.statusOnDischarge) {
     this.statusOnDischarge = this.status;
   }
+
+  if (this.ipNo && (!this.hospitalDetails || !this.hospitalDetails.ipNumber)) {
+    if (!this.hospitalDetails) this.hospitalDetails = {};
+    this.hospitalDetails.ipNumber = this.ipNo;
+  } else if (this.hospitalDetails?.ipNumber && !this.ipNo) {
+    this.ipNo = this.hospitalDetails.ipNumber;
+  }
+
   next();
 });
 
 // Indexes for high performance searching
-patientSchema.index({ "personalDetails.name": "text", crNo: "text", "contactDetails.mobile": "text" });
+patientSchema.index({ "personalDetails.name": "text", crNo: "text", ipNo: "text", "contactDetails.mobile": "text" });
 
 export const Patient = mongoose.model("Patient", patientSchema);
 export default Patient;

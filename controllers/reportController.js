@@ -337,17 +337,32 @@ export const getAdvancedSearch = async (req, res, next) => {
       const qRegex = new RegExp(q.trim(), "i");
       query.$or = [
         { crNo: qRegex },
+        { ipNo: qRegex },
         { "personalDetails.name": qRegex },
         { "contactDetails.mobile": qRegex },
         { "hospitalDetails.hospitalNumber": qRegex },
+        { "hospitalDetails.ipNumber": qRegex },
         { "hospitalDetails.patientNumber": qRegex },
         { "doctorDetails.doctorName": qRegex },
       ];
     }
 
     if (crNo) query.crNo = new RegExp(crNo.trim(), "i");
+    if (req.query.ipNo) {
+      query.$or = [
+        { ipNo: new RegExp(req.query.ipNo.trim(), "i") },
+        { "hospitalDetails.ipNumber": new RegExp(req.query.ipNo.trim(), "i") },
+        { "hospitalDetails.hospitalNumber": new RegExp(req.query.ipNo.trim(), "i") },
+      ];
+    }
     if (name) query["personalDetails.name"] = new RegExp(name.trim(), "i");
-    if (hospitalNumber) query["hospitalDetails.hospitalNumber"] = new RegExp(hospitalNumber.trim(), "i");
+    if (hospitalNumber) {
+      query.$or = [
+        { "hospitalDetails.hospitalNumber": new RegExp(hospitalNumber.trim(), "i") },
+        { "hospitalDetails.ipNumber": new RegExp(hospitalNumber.trim(), "i") },
+        { ipNo: new RegExp(hospitalNumber.trim(), "i") },
+      ];
+    }
     if (patientNumber) query["hospitalDetails.patientNumber"] = new RegExp(patientNumber.trim(), "i");
 
     const phoneVal = phone || mobile;
@@ -861,74 +876,139 @@ export const generatePatientPDF = async (req, res, next) => {
       metadata: { crNo: patient.crNo },
     });
 
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    // Single Page A4 Discharge Summary & Clinical Report
+    const doc = new PDFDocument({ margin: 28, size: "A4" });
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="Patient_Report_${patient.crNo}.pdf"`);
+    res.setHeader("Content-Disposition", `inline; filename="Discharge_Summary_${patient.crNo}.pdf"`);
     doc.pipe(res);
 
-    // Header Header Box
-    doc.fillColor("#0f172a").fontSize(20).text("PATIENT RECORD MANAGEMENT SYSTEM", { align: "center", bold: true });
-    doc.fillColor("#64748b").fontSize(10).text("Enterprise Patient Record & Clinical Summary", { align: "center" });
-    doc.moveDown(0.5);
-    doc.strokeColor("#cbd5e1").lineWidth(1).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
-    doc.moveDown(1);
+    const ipNumber = patient.ipNo || patient.hospitalDetails?.ipNumber || patient.hospitalDetails?.hospitalNumber || "N/A";
+    const dischargeRemarks = patient.dischargeRemarks || patient.doctorComments || "Discharged in stable condition. Advised follow-up as prescribed.";
 
-    // Patient Info Box
-    doc.fillColor("#1e293b").fontSize(14).text(`Patient Clinical Profile — CR: ${patient.crNo}`, { underline: true });
-    doc.moveDown(0.5);
+    // 1. HOSPITAL LETTERHEAD (Compact Single A4)
+    doc.fillColor("#0284c7").fontSize(15).text("DIGICODERS SUPER SPECIALTY HOSPITAL", { align: "center", bold: true });
+    doc.fillColor("#475569").fontSize(8).text("Tertiary Care & Multi-Specialty Clinical Research Network • Emergency & Trauma Center", { align: "center" });
+    doc.fillColor("#0f172a").fontSize(11).text("PATIENT DISCHARGE SUMMARY", { align: "center", bold: true });
+    doc.moveDown(0.2);
+    doc.strokeColor("#0284c7").lineWidth(1.5).moveTo(28, doc.y).lineTo(567, doc.y).stroke();
+    doc.moveDown(0.4);
 
-    doc.fontSize(10).fillColor("#334155");
-    doc.text(`Full Name: ${patient.personalDetails?.name || "N/A"}`);
-    doc.text(`Age / Gender: ${patient.personalDetails?.age || "N/A"} yrs / ${patient.personalDetails?.gender || "N/A"}`);
-    doc.text(`Mobile: ${patient.contactDetails?.mobile || "N/A"} | Email: ${patient.contactDetails?.email || "N/A"}`);
-    doc.text(`Address: ${patient.contactDetails?.address || "N/A"}, ${patient.contactDetails?.city || ""}`);
-    doc.text(`Hospital No: ${patient.hospitalDetails?.hospitalNumber || "N/A"}`);
-    doc.moveDown(0.8);
+    // 2. PATIENT IDENTIFICATION & ADMISSION GRID
+    const startY = doc.y;
+    doc.rect(28, startY, 539, 64).fillAndStroke("#f8fafc", "#cbd5e1");
+    doc.fillColor("#0f172a").fontSize(8.5);
 
-    // Admission & Doctor Details
-    doc.fillColor("#1e293b").fontSize(12).text("Admission & Department Info");
-    doc.fontSize(10).fillColor("#334155");
-    doc.text(`Department: ${patient.doctorDetails?.departmentName || "General"}`);
-    doc.text(`Attending Doctor: ${patient.doctorDetails?.doctorName || "N/A"}`);
-    doc.text(`Ward: ${patient.wardDetails?.ward || "General Ward"} (Bed ${patient.wardDetails?.bedNumber || "N/A"})`);
-    doc.text(`Admission Date: ${patient.admissionDetails?.admissionDate || "N/A"}`);
-    doc.text(`Current Status: ${patient.status || patient.statusOnDischarge || "Admitted"}`);
-    doc.moveDown(0.8);
+    // Row 1
+    doc.font("Helvetica-Bold").text("CR Number :", 34, startY + 5);
+    doc.font("Helvetica").text(patient.crNo || "N/A", 145, startY + 5);
 
-    // Clinical Summary
-    doc.fillColor("#1e293b").fontSize(12).text("Clinical Observations & History");
-    doc.fontSize(10).fillColor("#334155");
-    doc.text(`Diagnosis: ${patient.diagnosis?.diagnosisDetails || "N/A"}`);
-    doc.text(`Presenting Complaints: ${patient.diagnosis?.presentingComplaints || "N/A"}`);
-    doc.text(`Treatment Plan: ${patient.treatment?.treatmentDetails || "N/A"}`);
-    doc.text(`Doctor Comments: ${patient.doctorComments || "N/A"}`);
-    doc.moveDown(0.8);
+    doc.font("Helvetica-Bold").text("IP Number :", 300, startY + 5);
+    doc.font("Helvetica").text(ipNumber, 400, startY + 5);
 
-    // Follow-up Info
-    if (patient.followUp?.date) {
-      doc.fillColor("#1e293b").fontSize(12).text("Follow-up Instructions");
-      doc.fontSize(10).fillColor("#334155");
-      doc.text(`Next Visit Date: ${patient.followUp.date}`);
-      doc.text(`Instructions: ${patient.followUp.instructions || "None"}`);
-      doc.moveDown(0.8);
+    // Row 2
+    doc.font("Helvetica-Bold").text("Patient Name:", 34, startY + 18);
+    doc.font("Helvetica").text(`${patient.personalDetails?.name || "N/A"} (${patient.personalDetails?.age ?? "N/A"} Yrs / ${patient.personalDetails?.gender || "N/A"})`, 145, startY + 18);
+
+    doc.font("Helvetica-Bold").text("Father/Guardian:", 300, startY + 18);
+    doc.font("Helvetica").text(patient.personalDetails?.fatherGuardianName || "N/A", 400, startY + 18);
+
+    // Row 3
+    doc.font("Helvetica-Bold").text("Mobile / Contact:", 34, startY + 31);
+    doc.font("Helvetica").text(patient.contactDetails?.mobile || "N/A", 145, startY + 31);
+
+    doc.font("Helvetica-Bold").text("Ward / Bed No:", 300, startY + 31);
+    doc.font("Helvetica").text(`${patient.wardDetails?.ward || "General Ward"} / ${patient.wardDetails?.bedNumber || "N/A"}`, 400, startY + 31);
+
+    // Row 4
+    doc.font("Helvetica-Bold").text("Admission Date:", 34, startY + 44);
+    doc.font("Helvetica").text(patient.admissionDetails?.admissionDate || "N/A", 145, startY + 44);
+
+    doc.font("Helvetica-Bold").text("Discharge Date:", 300, startY + 44);
+    doc.font("Helvetica").text(patient.admissionDetails?.dischargeDate || "As on Discharge", 400, startY + 44);
+
+    // Row 5
+    doc.font("Helvetica-Bold").text("Consultant Doctor:", 34, startY + 55);
+    doc.font("Helvetica").text(`${patient.doctorDetails?.doctorName || "N/A"} (${patient.doctorDetails?.departmentName || "General"})`, 145, startY + 55);
+
+    doc.font("Helvetica-Bold").text("Status on Discharge:", 300, startY + 55);
+    doc.font("Helvetica").text(patient.statusOnDischarge || patient.status || "Discharged / Stable", 400, startY + 55);
+
+    doc.y = startY + 70;
+
+    // Helper for clean bordered sections
+    const renderSectionHeader = (title, hindiSub) => {
+      doc.moveDown(0.3);
+      const curY = doc.y;
+      doc.rect(28, curY, 539, 14).fill("#f1f5f9");
+      doc.fillColor("#0369a1").fontSize(8.5).font("Helvetica-Bold").text(`${title} ${hindiSub ? `[${hindiSub}]` : ""}`, 32, curY + 2.5);
+      doc.y = curY + 17;
+      doc.fillColor("#1e293b").font("Helvetica").fontSize(8);
+    };
+
+    // 3.  (CONDITION AT ADMISSION)
+    renderSectionHeader("1. CLINICAL CONDITION AT ADMISSION");
+    doc.font("Helvetica-Bold").text("Diagnosis : ", 32, doc.y, { continued: true });
+    doc.font("Helvetica").text(patient.diagnosis?.diagnosisDetails || "Under Clinical Evaluation");
+
+    doc.font("Helvetica-Bold").text("Presenting Complaints: ", 32, doc.y, { continued: true });
+    doc.font("Helvetica").text(patient.diagnosis?.presentingComplaints || "Standard inpatient admission evaluation");
+
+    if (patient.diagnosis?.physicalFindings) {
+      doc.font("Helvetica-Bold").text("Physical Vitals at Admission: ", 32, doc.y, { continued: true });
+      doc.font("Helvetica").text(patient.diagnosis.physicalFindings);
     }
 
-    // Recent Visit Timeline
-    if (visits.length > 0) {
-      doc.fillColor("#1e293b").fontSize(12).text(`Visits Summary (${visits.length} record(s))`);
-      doc.fontSize(9).fillColor("#475569");
-      visits.slice(0, 5).forEach((v, idx) => {
-        doc.text(`${idx + 1}. Date: ${new Date(v.visitDate).toLocaleDateString()} | Type: ${v.visitType} | Doctor: ${v.doctorName || "N/A"}`);
-        doc.text(`   Diagnosis: ${v.diagnosis || "N/A"}`);
+    // 4. (COURSE IN HOSPITAL & INVESTIGATIONS)
+    renderSectionHeader("2. HOSPITAL COURSE & DIAGNOSTIC PROGRESS");
+    doc.font("Helvetica-Bold").text("Course in Hospital: ", 32, doc.y, { continued: true });
+    doc.font("Helvetica").text(patient.courseInHospital || "Patient managed conservatively with IV fluids, antibiotics and clinical monitoring. Showed steady recovery.");
+
+    if (patient.investigationDetails || patient.histopathologyDetails) {
+      doc.font("Helvetica-Bold").text("Investigations & Findings: ", 32, doc.y, { continued: true });
+      doc.font("Helvetica").text(patient.investigationDetails || patient.histopathologyDetails || "Routine Labs within normal clinical range.");
+    }
+
+    // 5.(TREATMENT & PROCEDURES GIVEN)
+    renderSectionHeader("3. TREATMENT & PROCEDURAL SUMMARY");
+    if (patient.treatment?.operationProcedureDetails) {
+      doc.font("Helvetica-Bold").text("Surgery / Procedure Performed: ", 32, doc.y, { continued: true });
+      doc.font("Helvetica").text(patient.treatment.operationProcedureDetails);
+    }
+    doc.font("Helvetica-Bold").text("Treatment Details Given: ", 32, doc.y, { continued: true });
+    doc.font("Helvetica").text(patient.treatment?.treatmentDetails || "Inpatient medication protocol administered as per standard hospital clinical guidelines.");
+
+    // Discharge Medications Table (if any)
+    if (patient.medications && patient.medications.length > 0) {
+      doc.moveDown(0.2);
+      doc.font("Helvetica-Bold").text("Discharge Medications Prescribed :", 32, doc.y);
+      doc.font("Helvetica");
+      patient.medications.slice(0, 4).forEach((med, mIdx) => {
+        doc.text(`   • ${med.medicine || "Medicine"} — Dosage: ${med.dosage || "1 Tab"} | Frequency: ${med.frequency || "OD"} | Duration: ${med.duration || "5 Days"} ${med.instructions ? `(${med.instructions})` : ""}`);
       });
-      doc.moveDown(0.8);
     }
 
-    // Footer with Signature & Generated Timestamp
-    doc.moveDown(2);
-    doc.fontSize(9).fillColor("#94a3b8");
-    doc.text(`Generated on: ${new Date().toLocaleString()} | Authenticated Digital Health Record`, { align: "center" });
+    // 6. डिस्चार्ज रिमार्क (DISCHARGE REMARKS & ADVICE)
+    renderSectionHeader("4. DISCHARGE REMARKS & ADVICE");
+    doc.font("Helvetica-Bold").fillColor("#b91c1c").text("Discharge Remarks: ", 32, doc.y, { continued: true });
+    doc.font("Helvetica").fillColor("#0f172a").text(dischargeRemarks);
+
+    if (patient.followUp?.date || patient.followUp?.instructions) {
+      doc.font("Helvetica-Bold").text("Follow-up Consultation: ", 32, doc.y, { continued: true });
+      doc.font("Helvetica").text(`Next Visit: ${patient.followUp.date || "After 7 Days"} | Instructions: ${patient.followUp.instructions || "Report to OPD for review."}`);
+    }
+
+    // 7. SIGNATURES & AUTHENTICATION BLOCK (Pinned neatly to bottom of single A4)
+    doc.moveDown(1.2);
+    const sigY = Math.max(doc.y, 735);
+    doc.strokeColor("#cbd5e1").lineWidth(0.8).moveTo(28, sigY).lineTo(567, sigY).stroke();
+
+    doc.fontSize(7.5).fillColor("#64748b");
+    doc.text(`Generated: ${new Date().toLocaleString("en-IN")} | Computer Generated Official Discharge Record`, 28, sigY + 6);
+
+    doc.fontSize(8).fillColor("#0f172a").font("Helvetica-Bold");
+    doc.text("Prepared by (RMO / Nurse)", 50, sigY + 30);
+    doc.text("Treating Consultant / Doctor's Signature & Seal", 360, sigY + 30);
 
     doc.end();
   } catch (error) {
