@@ -45,7 +45,7 @@ const visitSchema = new mongoose.Schema(
     },
     visitType: {
       type: String,
-      enum: ["OPD", "IPD", "Follow-up", "Emergency", "Procedure", "Other"],
+      enum: ["OPD", "IPD", "IPD / Admission", "Follow-up", "Emergency", "Procedure", "Other"],
       default: "OPD",
       index: true,
     },

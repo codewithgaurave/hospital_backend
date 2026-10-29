@@ -45,7 +45,7 @@ router
   .post(authorizeRoles("admin", "doctor", "staff"), validatePatientRegistration, handleValidationErrors, createPatient);
 
 // Direct visit delete helper for standalone reports
-router.delete("/visits/:visitId", authorizeRoles("admin", "doctor"), deletePatientVisit);
+router.delete("/visits/:visitId", authorizeRoles("admin", "doctor", "staff"), deletePatientVisit);
 
 // Medical History & Visits Routes
 router.get("/:id/history", getPatientHistory);
@@ -57,9 +57,9 @@ router
 router
   .route("/:id/visits/:visitId")
   .get(getVisitById)
-  .put(authorizeRoles("admin", "doctor"), updatePatientVisit)
-  .patch(authorizeRoles("admin", "doctor"), updatePatientVisit)
-  .delete(authorizeRoles("admin", "doctor"), deletePatientVisit);
+  .put(authorizeRoles("admin", "doctor", "staff"), updatePatientVisit)
+  .patch(authorizeRoles("admin", "doctor", "staff"), updatePatientVisit)
+  .delete(authorizeRoles("admin", "doctor", "staff"), deletePatientVisit);
 
 // Document Management Routes
 router

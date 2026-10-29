@@ -117,9 +117,29 @@ export const getPatientDocuments = async (req, res, next) => {
       .sort({ uploadedAt: -1 })
       .lean();
 
+    let finalDocs = [...documents];
+    if (patient.files && patient.files.length > 0 && (!category || category === "All" || category === "Other")) {
+      const existingStoredNames = new Set(documents.map((d) => d.storedName));
+      for (const pf of patient.files) {
+        if (!existingStoredNames.has(pf.filename)) {
+          finalDocs.push({
+            _id: pf._id ? pf._id.toString() : pf.filename,
+            patientId: patient._id,
+            storedName: pf.filename,
+            originalName: pf.originalName || pf.filename,
+            mimeType: pf.mimeType,
+            size: pf.size || 0,
+            path: pf.path || `/uploads/${pf.filename}`,
+            category: "Other",
+            uploadedAt: pf.uploadedAt || new Date(),
+          });
+        }
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      data: documents,
+      data: finalDocs,
     });
   } catch (error) {
     next(error);
@@ -133,22 +153,40 @@ export const streamDocument = async (req, res, next) => {
   try {
     const { fileId } = req.params;
 
-    let doc;
+    let doc = null;
     if (fileId.match(/^[0-9a-fA-F]{24}$/)) {
       doc = await Document.findById(fileId);
+      if (!doc) {
+        // Also check if fileId is an embedded subdocument in patient.files
+        const patientWithFile = await Patient.findOne({ "files._id": fileId }, { "files.$": 1 });
+        if (patientWithFile && patientWithFile.files?.[0]) {
+          const f = patientWithFile.files[0];
+          doc = {
+            storedName: f.filename,
+            originalName: f.originalName || f.filename,
+            mimeType: f.mimeType,
+          };
+        }
+      }
     } else {
-      doc = await Document.findOne({ storedName: fileId });
-    }
-
-    if (!doc) {
-      return res.status(404).json({
-        success: false,
-        message: "File record not found",
+      doc = await Document.findOne({
+        $or: [{ storedName: fileId }, { originalName: fileId }]
       });
+      if (!doc) {
+        const patientWithFile = await Patient.findOne({ "files.filename": fileId }, { "files.$": 1 });
+        if (patientWithFile && patientWithFile.files?.[0]) {
+          const f = patientWithFile.files[0];
+          doc = {
+            storedName: f.filename,
+            originalName: f.originalName || f.filename,
+            mimeType: f.mimeType,
+          };
+        }
+      }
     }
 
     // Path traversal check
-    const safeFilename = path.basename(doc.storedName);
+    const safeFilename = doc?.storedName ? path.basename(doc.storedName) : path.basename(fileId);
     const filePath = path.join(process.cwd(), "uploads", safeFilename);
 
     if (!fs.existsSync(filePath)) {
@@ -158,8 +196,22 @@ export const streamDocument = async (req, res, next) => {
       });
     }
 
-    res.setHeader("Content-Type", doc.mimeType);
-    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalName)}"`);
+    // Determine mimeType if not already found in doc
+    let mimeType = doc?.mimeType;
+    if (!mimeType) {
+      const ext = path.extname(safeFilename).toLowerCase();
+      if (ext === ".pdf") mimeType = "application/pdf";
+      else if (ext === ".png") mimeType = "image/png";
+      else if (ext === ".jpg" || ext === ".jpeg") mimeType = "image/jpeg";
+      else if (ext === ".webp") mimeType = "image/webp";
+      else if (ext === ".svg") mimeType = "image/svg+xml";
+      else mimeType = "application/octet-stream";
+    }
+
+    const originalName = doc?.originalName || safeFilename;
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(originalName)}"`);
 
     const fileStream = fs.createReadStream(filePath);
     fileStream.pipe(res);

@@ -189,14 +189,16 @@ export const getPatients = async (req, res, next) => {
       query["wardDetails.ward"] = ward;
     }
 
-    const patients = await Patient.find(query)
-      .populate("createdBy", "name role")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    const total = await Patient.countDocuments(query);
+    // Run query and count in parallel for maximum performance
+    const [patients, total] = await Promise.all([
+      Patient.find(query)
+        .populate("createdBy", "name role")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Patient.countDocuments(query),
+    ]);
     const totalPages = Math.ceil(total / limit) || 1;
 
     return res.status(200).json({
@@ -483,11 +485,29 @@ export const deletePatientPermanently = async (req, res, next) => {
   }
 };
 
+// In-memory cache for dynamic filter options to eliminate repeated heavy aggregates
+let cachedFilterOptions = null;
+let cachedFilterOptionsTime = 0;
+const FILTER_CACHE_TTL = 120 * 1000; // 2 minutes
+
+export const clearFilterOptionsCache = () => {
+  cachedFilterOptions = null;
+  cachedFilterOptionsTime = 0;
+};
+
 // @desc    Get dynamic distinct filter options (doctors, departments, wards) directly from Patient collection
 // @route   GET /api/patients/filter-options
 // @access  Private
 export const getPatientFilterOptions = async (req, res, next) => {
   try {
+    const now = Date.now();
+    if (cachedFilterOptions && now - cachedFilterOptionsTime < FILTER_CACHE_TTL) {
+      return res.status(200).json({
+        success: true,
+        data: cachedFilterOptions,
+      });
+    }
+
     // 1. Doctors with their exact department from patient table
     const doctorsAgg = await Patient.aggregate([
       {
@@ -536,13 +556,18 @@ export const getPatientFilterOptions = async (req, res, next) => {
       "Neurosurgery Pediatrics ward",
     ];
 
+    const result = {
+      doctors: doctorsAgg,
+      departments,
+      wards,
+    };
+
+    cachedFilterOptions = result;
+    cachedFilterOptionsTime = Date.now();
+
     return res.status(200).json({
       success: true,
-      data: {
-        doctors: doctorsAgg,
-        departments,
-        wards,
-      },
+      data: result,
     });
   } catch (error) {
     next(error);

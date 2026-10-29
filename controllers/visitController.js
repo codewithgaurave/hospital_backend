@@ -150,37 +150,72 @@ export const createPatientVisit = async (req, res, next) => {
     const lastVisit = await Visit.findOne({ patientId: patient._id }).sort({ visitNumber: -1 });
     const visitNumber = lastVisit ? lastVisit.visitNumber + 1 : 1;
 
-    const statusOnDischarge = req.body.statusOnDischarge || req.body.status || "Under Treatment";
+    let statusOnDischarge = req.body.statusOnDischarge || req.body.status || "Under Treatment";
+    if (!["Admitted", "Discharged", "Under Treatment", "Pending"].includes(statusOnDischarge)) {
+      statusOnDischarge = "Under Treatment";
+    }
+
+    // Normalize visitType
+    let visitType = (req.body.visitType || "OPD").trim();
+    if (!["OPD", "IPD", "IPD / Admission", "Follow-up", "Emergency", "Procedure", "Other"].includes(visitType)) {
+      if (visitType.toLowerCase().includes("ipd") || visitType.toLowerCase().includes("admission")) {
+        visitType = "IPD";
+      } else {
+        visitType = "OPD";
+      }
+    }
+
+    // Normalize visitDate
+    let visitDate = req.body.visitDate;
+    if (!visitDate || visitDate === "" || isNaN(new Date(visitDate).getTime())) {
+      visitDate = new Date();
+    } else {
+      visitDate = new Date(visitDate);
+    }
+
+    // Clean medications array
+    let cleanMedications = [];
+    if (Array.isArray(req.body.medications)) {
+      cleanMedications = req.body.medications.filter(
+        (m) => m && m.medicine && typeof m.medicine === "string" && m.medicine.trim() !== ""
+      );
+    }
 
     const visitData = {
       ...req.body,
       patientId: patient._id,
       visitNumber,
+      visitType,
+      visitDate,
+      medications: cleanMedications,
       statusOnDischarge,
       createdBy: req.user._id,
     };
 
     const visit = await Visit.create(visitData);
 
-    // Synchronize active patient identity status without overwriting historic visit history
+    // Synchronize active patient identity status safely without breaking on undefined objects or triggering validation errors
+    const patientUpdates = {};
     if (req.body.status || req.body.statusOnDischarge) {
-      patient.status = statusOnDischarge;
-      patient.statusOnDischarge = statusOnDischarge;
+      patientUpdates.status = statusOnDischarge;
+      patientUpdates.statusOnDischarge = statusOnDischarge;
     }
-
     if (req.body.doctorName) {
-      patient.doctorDetails.doctorName = req.body.doctorName;
+      patientUpdates["doctorDetails.doctorName"] = req.body.doctorName;
     }
     if (req.body.departmentName) {
-      patient.doctorDetails.departmentName = req.body.departmentName;
+      patientUpdates["doctorDetails.departmentName"] = req.body.departmentName;
     }
     if (req.body.ward) {
-      patient.wardDetails.ward = req.body.ward;
+      patientUpdates["wardDetails.ward"] = req.body.ward;
     }
     if (req.body.bedNumber) {
-      patient.wardDetails.bedNumber = req.body.bedNumber;
+      patientUpdates["wardDetails.bedNumber"] = req.body.bedNumber;
     }
-    await patient.save();
+
+    if (Object.keys(patientUpdates).length > 0) {
+      await Patient.findByIdAndUpdate(patient._id, { $set: patientUpdates });
+    }
 
     await logAudit({
       userId: req.user._id,

@@ -151,5 +151,15 @@ patientSchema.pre("save", function (next) {
 // Indexes for high performance searching
 patientSchema.index({ "personalDetails.name": "text", crNo: "text", ipNo: "text", "contactDetails.mobile": "text" });
 
+// High-speed compound indexes for instant sorting & filtering
+patientSchema.index({ isArchived: 1, createdAt: -1 });
+patientSchema.index({ isArchived: 1, status: 1, createdAt: -1 });
+patientSchema.index({ isArchived: 1, statusOnDischarge: 1, createdAt: -1 });
+patientSchema.index({ isArchived: 1, "personalDetails.name": 1 });
+patientSchema.index({ isArchived: 1, "contactDetails.mobile": 1 });
+patientSchema.index({ isArchived: 1, "doctorDetails.doctorName": 1 });
+patientSchema.index({ isArchived: 1, "doctorDetails.departmentName": 1 });
+patientSchema.index({ isArchived: 1, "wardDetails.ward": 1 });
+
 export const Patient = mongoose.model("Patient", patientSchema);
 export default Patient;
